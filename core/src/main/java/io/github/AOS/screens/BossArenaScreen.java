@@ -22,21 +22,26 @@ import io.github.AOS.combat.CombatSystem;
 import io.github.AOS.entities.Minion;
 import io.github.AOS.entities.Player;
 import io.github.AOS.entities.PowerUp;
-import io.github.AOS.entities.bosses.BossC;
+import io.github.AOS.entities.bosses.BossPython;
 import io.github.AOS.input.PlayerInputHandler;
 import io.github.AOS.systems.CheatManager;
+import io.github.AOS.systems.Difficulty;
+import io.github.AOS.systems.ScoreManager;
+import io.github.AOS.utils.AssetLoader;
 import io.github.AOS.utils.PlaceholderFactory;
 import io.github.AOS.world.Hazard;
 import io.github.AOS.world.ParallaxBackground;
 import io.github.AOS.world.Platform;
 
+import java.util.List;
+
 /**
- * Tela da Arena e Fase de Plataforma 2D:
- * - Etapa vertical com múltiplas plataformas, espinhos (hazards) e inimigos básicos vermelhos (Minions).
- * - Arena final com 1 único Boss (BossC).
- * - Menu de Pausa com ESC (Recomeçar / Sair).
- * - Tela de Vitória com mensagem exata "parabéns! ✌️ ✌️".
- * - Cheats ocultos por padrão, ativáveis via botão secreto no Menu Principal.
+ * Tela da Arena e Fase de Plataforma 2D integrada com:
+ * - Sistema de Pontuação (ScoreManager) acumulando pontos por dano e power-ups.
+ * - Caixa preta de inserção de nome/apelido via teclado ao término da partida.
+ * - Leaderboard local ordenado estritamente em ordem decrescente.
+ * - Boss Python com padrão dinâmico de projéteis amarelos e cinemática de entrada.
+ * - Menu de Pausa com ESC (Recomeçar / Sair) e Cheats com botão secreto.
  */
 public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputListener {
 
@@ -48,7 +53,12 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
     public static final float WORLD_HEIGHT = 900f;
     private static final float GROUND_HEIGHT = 80f;
 
+    // Posição de entrada da arena do Boss
+    private static final float BOSS_ARENA_TRIGGER_X = 2380f;
+    private static final float INTRO_DURATION = 2.6f;
+
     private final Main game;
+    private final Difficulty difficulty;
 
     // Câmera do mundo de jogo
     private final OrthographicCamera camera;
@@ -76,11 +86,23 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
 
     // Entidades e Combate
     private Player player;
-    private BossC bossC; // 1 ÚNICO BOSS FINAL
+    private BossPython bossPython;
     private final CombatSystem combatSystem;
     private final CheatManager cheatManager;
+    private final ScoreManager scoreManager;
     private PlayerInputHandler inputHandler;
     private int powerUpCycleIndex = 0;
+
+    // Cinematográfica de Entrada do Boss Python
+    private boolean bossArenaTriggered = false;
+    private boolean isBossIntroActive = false;
+    private float bossIntroTimer = 0f;
+
+    // Sistema de Inserção de Apelido (Fim de Jogo) e Leaderboard
+    private boolean nicknameModalActive = false;
+    private boolean nicknameSubmitted = false;
+    private final StringBuilder nicknameInput = new StringBuilder();
+    private float cursorBlinkTimer = 0f;
 
     // Estados de Pausa (Tecla ESC)
     private boolean isPaused = false;
@@ -89,14 +111,25 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
     private final Rectangle btnPauseExitBounds;
     private int hoveredPauseButton = 0; // 1: Recomeçar, 2: Sair
 
-    // Texturas de interface do menu de pausa
+    // Texturas de interface
     private final Texture modalOverlayTexture;
     private final Texture modalPanelTexture;
+    private final Texture blackBoxTexture;
     private final Texture btnTexture;
     private final Texture btnHoverTexture;
+    private final Texture cinematicBannerTexture;
 
     public BossArenaScreen(Main game) {
+        this(game, 1.0f);
+    }
+
+    public BossArenaScreen(Main game, float speedMultiplier) {
+        this(game, getDifficultyFromMultiplier(speedMultiplier));
+    }
+
+    public BossArenaScreen(Main game, Difficulty difficulty) {
         this.game = game;
+        this.difficulty = difficulty;
 
         // Câmera do mundo
         this.camera = new OrthographicCamera();
@@ -121,23 +154,24 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
         this.glyphLayout = new GlyphLayout();
         this.mouseCoords = new Vector3();
 
-        // Cenário e chão base
+        // Cenário e chão base com suporte a fallback de assets (tile/dirt.png)
         this.parallaxBackground = new ParallaxBackground();
-        this.groundTexture = PlaceholderFactory.createGroundTexture();
+        this.groundTexture = AssetLoader.loadTextureWithFallback(
+                "sprites/tile/dirt.png",
+                PlaceholderFactory::createGroundTexture
+        );
 
-        // Chão inicial e chão da arena do boss (com fosso entre eles)
         this.startGroundBounds = new Rectangle(0f, 0f, 320f, GROUND_HEIGHT);
         this.bossArenaGroundBounds = new Rectangle(2400f, 0f, 1800f, GROUND_HEIGHT);
 
-        // Coleções do mundo
         this.platforms = new Array<>();
         this.hazards = new Array<>();
         this.minions = new Array<>();
         this.powerUps = new Array<>();
 
-        // Combate e cheats
         this.combatSystem = new CombatSystem();
         this.cheatManager = new CheatManager();
+        this.scoreManager = new ScoreManager();
 
         // Geometria do Menu de Pausa
         float pWidth = 440f;
@@ -152,12 +186,13 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
         this.btnPauseRestartBounds = new Rectangle(bX, pY + 115f, bWidth, bHeight);
         this.btnPauseExitBounds = new Rectangle(bX, pY + 45f, bWidth, bHeight);
 
-        this.modalOverlayTexture = PlaceholderFactory.createColoredTexture(new Color(0f, 0f, 0f, 0.75f));
+        this.modalOverlayTexture = PlaceholderFactory.createColoredTexture(new Color(0f, 0f, 0f, 0.78f));
         this.modalPanelTexture = PlaceholderFactory.createColoredTexture(new Color(0.12f, 0.12f, 0.18f, 0.98f));
+        this.blackBoxTexture = PlaceholderFactory.createColoredTexture(Color.BLACK);
         this.btnTexture = PlaceholderFactory.createColoredTexture(new Color(0.20f, 0.20f, 0.28f, 1f));
         this.btnHoverTexture = PlaceholderFactory.createColoredTexture(new Color(0.20f, 0.60f, 0.30f, 1f));
+        this.cinematicBannerTexture = PlaceholderFactory.createColoredTexture(new Color(0.05f, 0.05f, 0.08f, 0.88f));
 
-        // Inicializa mapa, entidades e plataformas
         initBattle();
     }
 
@@ -166,9 +201,19 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
      */
     private void initBattle() {
         this.isPaused = false;
+        this.bossArenaTriggered = false;
+        this.isBossIntroActive = false;
+        this.bossIntroTimer = 0f;
+
+        // Reset da inserção de apelido e score
+        this.nicknameModalActive = false;
+        this.nicknameSubmitted = false;
+        this.nicknameInput.setLength(0);
+        this.cursorBlinkTimer = 0f;
+        this.scoreManager.reset();
 
         if (player != null) player.dispose();
-        if (bossC != null) bossC.dispose();
+        if (bossPython != null) bossPython.dispose();
 
         for (Platform p : platforms) p.dispose();
         platforms.clear();
@@ -182,24 +227,26 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
         for (PowerUp pu : powerUps) pu.dispose();
         powerUps.clear();
 
-        // Jogador posicionado no início da fase
+        // Jogador no início da fase
         this.player = new Player(80f, GROUND_HEIGHT);
+        // Ancoragem física inicial segura sobre o solo
+        this.player.checkPlatformCollision(startGroundBounds);
 
-        // 1 ÚNICO BOSS FINAL posicionado na arena à direita
-        this.bossC = new BossC(3300f, GROUND_HEIGHT);
+        // 1 Único Boss Final (BossPython) na arena
+        this.bossPython = new BossPython(3400f, GROUND_HEIGHT, difficulty.getSpeedMultiplier());
 
-        // Construção do percurso com verticalidade e múltiplas plataformas
-        platforms.add(new Platform(360f, 170f, 260f, 24f));
-        platforms.add(new Platform(680f, 290f, 280f, 24f));
-        platforms.add(new Platform(1040f, 420f, 240f, 24f));
-        platforms.add(new Platform(1360f, 540f, 340f, 24f)); // Ponto mais alto
-        platforms.add(new Platform(1780f, 400f, 280f, 24f));
-        platforms.add(new Platform(2120f, 240f, 240f, 24f));
+        // Plataformas suspensas com verticalidade (compartilhando a textura otimizada de dirt.png)
+        platforms.add(new Platform(360f, 170f, 260f, 24f, groundTexture));
+        platforms.add(new Platform(680f, 290f, 280f, 24f, groundTexture));
+        platforms.add(new Platform(1040f, 420f, 240f, 24f, groundTexture));
+        platforms.add(new Platform(1360f, 540f, 340f, 24f, groundTexture));
+        platforms.add(new Platform(1780f, 400f, 280f, 24f, groundTexture));
+        platforms.add(new Platform(2120f, 240f, 240f, 24f, groundTexture));
 
-        // Obstáculos letais fixos (espinhos no fosso do chão)
+        // Espinhos no fosso
         hazards.add(new Hazard(320f, 0f, 2080f, 45f, 40));
 
-        // Inimigos básicos (Minions vermelhos) patrulhando as plataformas suspensas
+        // Minions vermelhos estáveis patrulhando as plataformas
         minions.add(new Minion(700f, 314f, 680f, 910f));
         minions.add(new Minion(1380f, 564f, 1360f, 1650f));
         minions.add(new Minion(1800f, 424f, 1780f, 2010f));
@@ -225,8 +272,8 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
     }
 
     public void forceVictory() {
-        if (bossC != null && !bossC.isDead()) {
-            bossC.takeDamage(999999);
+        if (bossPython != null && !bossPython.isDead()) {
+            bossPython.takeDamage(999999);
         }
     }
 
@@ -237,12 +284,14 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
 
     @Override
     public void render(float delta) {
-        // Se o jogo NÃO estiver pausado, executa a física e atualizações
-        if (!isPaused) {
+        cursorBlinkTimer += delta;
+
+        // Se o jogo NÃO estiver pausado nem aguardando input de apelido, executa a física
+        if (!isPaused && !nicknameModalActive && !nicknameSubmitted) {
             updateGame(delta);
         }
 
-        // Limpeza de buffer
+        // Limpeza de tela
         ScreenUtils.clear(Color.BLACK);
 
         // Renderização do mundo de jogo
@@ -259,12 +308,12 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
         batch.draw(groundTexture, startGroundBounds.x, startGroundBounds.y, startGroundBounds.width, startGroundBounds.height);
         batch.draw(groundTexture, bossArenaGroundBounds.x, bossArenaGroundBounds.y, bossArenaGroundBounds.width, bossArenaGroundBounds.height);
 
-        // Plataformas suspensas com verticalidade
+        // Plataformas suspensas
         for (Platform platform : platforms) {
             platform.render(batch);
         }
 
-        // Obstáculos letais (espinhos)
+        // Espinhos letais
         for (Hazard hazard : hazards) {
             hazard.render(batch);
         }
@@ -279,71 +328,123 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
             minion.render(batch);
         }
 
-        // Único Boss Final (BossC) e Jogador
-        bossC.render(batch);
+        // Boss Python e Jogador
+        bossPython.render(batch);
         player.render(batch);
 
         batch.end();
 
-        // Renderização da HUD e menus flutuantes (projeção fixa)
+        // Renderização da HUD principal
         renderHUD();
 
-        // Se pausado, renderiza o Menu de Pausa
+        // Banner da Cinematográfica de Entrada do Boss
+        if (isBossIntroActive) {
+            renderCinematicIntro();
+        }
+
+        // Caixa Preta de Inserção de Nome/Apelido no término do jogo
+        if (nicknameModalActive) {
+            renderNicknameInputModal();
+        } else if (nicknameSubmitted) {
+            renderPostGameLeaderboard();
+        }
+
+        // Menu de Pausa (Tecla ESC)
         if (isPaused) {
             renderPauseMenu();
         }
     }
 
+    private static Difficulty getDifficultyFromMultiplier(float mult) {
+        if (mult <= 0.5f) return Difficulty.FACIL;
+        if (mult >= 1.5f) return Difficulty.DIFICIL;
+        return Difficulty.MEDIO;
+    }
+
     /**
-     * Atualizações de lógica de jogo (executadas apenas quando não pausado).
+     * Atualizações de lógica e combate.
      */
     private void updateGame(float delta) {
-        cheatManager.update(delta);
+        // Limita o delta time para evitar tunelamento de colisão em frames de carregamento inicial
+        float safeDelta = Math.min(delta, 0.033f);
 
-        // Efeito slow-motion do Claude sobre o boss
-        float bossDelta = player.isClaudeSlowActive() ? delta * 0.40f : delta;
+        cheatManager.update(safeDelta);
+
+        // Gatilho de entrada na arena
+        if (!bossArenaTriggered && player.getPosition().x >= BOSS_ARENA_TRIGGER_X) {
+            bossArenaTriggered = true;
+            isBossIntroActive = true;
+            bossIntroTimer = 0f;
+            cheatManager.showNotification("A SERPENTE DA INDENTAÇÃO SURGIU!");
+        }
+
+        if (isBossIntroActive) {
+            bossIntroTimer += safeDelta;
+            if (bossIntroTimer >= INTRO_DURATION) {
+                isBossIntroActive = false;
+            }
+            updateCameraFollow();
+            return;
+        }
+
+        float bossDelta = player.isClaudeSlowActive() ? safeDelta * 0.40f : safeDelta;
 
         // Atualização do jogador
-        player.update(delta);
+        player.update(safeDelta);
 
-        // Atualização do Boss Final apenas quando o jogador se aproxima da arena ou do Boss
-        bossC.update(bossDelta, player, bossArenaGroundBounds);
+        // Atualização do Boss Python e cálculo de dano na pontuação
+        if (bossArenaTriggered) {
+            bossPython.update(bossDelta, player, bossArenaGroundBounds);
+            combatSystem.update(safeDelta, player, bossPython, scoreManager);
+
+            // Bônus ao derrotar o Boss Python
+            if (bossPython.isDead()) {
+                scoreManager.addVictoryBonus(player.getCurrentHp());
+                nicknameModalActive = true;
+            }
+        }
+
+        if (player.isDead()) {
+            nicknameModalActive = true;
+        }
 
         // Atualização dos Minions
         for (Minion minion : minions) {
-            minion.update(delta);
+            minion.update(safeDelta);
         }
 
-        // Atualização dos Power-ups
-        updatePowerUps(delta);
+        // Atualização dos Power-ups e acúmulo de pontos
+        updatePowerUps(safeDelta);
 
-        // Colisões do jogador com chão e plataformas suspensas
+        // Colisões de plataforma
         player.checkPlatformCollision(startGroundBounds);
         player.checkPlatformCollision(bossArenaGroundBounds);
         for (Platform platform : platforms) {
             player.checkPlatformCollision(platform.getBounds());
         }
 
-        // Colisões com espinhos letais (Hazards)
+        // Colisões com espinhos
         for (Hazard hazard : hazards) {
             if (Intersector.overlaps(player.getBounds(), hazard.getBounds())) {
                 if (!player.isInvulnerable()) {
                     player.takeDamage(hazard.getDamage());
-                    player.applyKnockback(-240f, 520f); // Impulso para tentar o salto novamente
+                    player.applyKnockback(-240f, 520f);
                 }
             }
         }
 
-        // Combate com Minions
+        // Combate com Minions e acúmulo de pontuação por dano
         for (Minion minion : minions) {
             if (minion.isDead()) continue;
 
-            // Ataque do jogador no minion
             if (player.isAttacking() && Intersector.overlaps(player.getAttackBounds(), minion.getBounds())) {
-                minion.takeDamage(player.getAttackDamage());
+                int damage = player.getAttackDamage();
+                boolean damaged = minion.takeDamage(damage);
+                if (damaged) {
+                    scoreManager.addDamagePoints(damage, false);
+                }
             }
 
-            // Minion encosta no jogador
             if (Intersector.overlaps(player.getBounds(), minion.getBounds())) {
                 if (!player.isInvulnerable()) {
                     player.takeDamage(15);
@@ -353,13 +454,7 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
             }
         }
 
-        // Combate com o Boss Final
-        combatSystem.update(delta, player, bossC);
-
-        // Restrição de limites da fase
         keepEntitiesInBounds();
-
-        // Rastreamento de câmera horizontal e vertical suave
         updateCameraFollow();
     }
 
@@ -370,6 +465,7 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
 
             if (!p.isCollected() && Intersector.overlaps(player.getBounds(), p.getBounds())) {
                 p.apply(player);
+                scoreManager.addPowerUpPoints(p.getType());
                 cheatManager.showNotification("POWER-UP ATIVADO: " + p.getType().getDisplayName());
                 p.dispose();
                 powerUps.removeIndex(i);
@@ -378,9 +474,9 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
     }
 
     private void keepEntitiesInBounds() {
-        // Jogador
-        if (player.getPosition().x < 0f) {
-            player.getPosition().x = 0f;
+        float minX = bossArenaTriggered ? BOSS_ARENA_TRIGGER_X : 0f;
+        if (player.getPosition().x < minX) {
+            player.getPosition().x = minX;
             player.getVelocity().x = 0f;
             player.getBounds().setPosition(player.getPosition().x, player.getPosition().y);
         } else if (player.getPosition().x + player.getWidth() > WORLD_WIDTH) {
@@ -389,26 +485,22 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
             player.getBounds().setPosition(player.getPosition().x, player.getPosition().y);
         }
 
-        // Se cair totalmente fora do mapa
         if (player.getPosition().y < -50f) {
             player.takeDamage(9999);
+            nicknameModalActive = true;
         }
 
-        // Boss Final dentro da arena
-        if (bossC.getPosition().x < bossArenaGroundBounds.x) {
-            bossC.getPosition().x = bossArenaGroundBounds.x;
-            bossC.getVelocity().x = 0f;
-            bossC.getBounds().setPosition(bossC.getPosition().x, bossC.getPosition().y);
-        } else if (bossC.getPosition().x + bossC.getWidth() > WORLD_WIDTH) {
-            bossC.getPosition().x = WORLD_WIDTH - bossC.getWidth();
-            bossC.getVelocity().x = 0f;
-            bossC.getBounds().setPosition(bossC.getPosition().x, bossC.getPosition().y);
+        if (bossPython.getPosition().x < bossArenaGroundBounds.x) {
+            bossPython.getPosition().x = bossArenaGroundBounds.x;
+            bossPython.getVelocity().x = 0f;
+            bossPython.getBounds().setPosition(bossPython.getPosition().x, bossPython.getPosition().y);
+        } else if (bossPython.getPosition().x + bossPython.getWidth() > WORLD_WIDTH) {
+            bossPython.getPosition().x = WORLD_WIDTH - bossPython.getWidth();
+            bossPython.getVelocity().x = 0f;
+            bossPython.getBounds().setPosition(bossPython.getPosition().x, bossPython.getPosition().y);
         }
     }
 
-    /**
-     * Câmera suave acompanhando o jogador tanto em X quanto em Y para valorizar a verticalidade.
-     */
     private void updateCameraFollow() {
         float halfW = VIRTUAL_WIDTH / 2f;
         float targetCameraX = MathUtils.clamp(
@@ -430,14 +522,13 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
     }
 
     /**
-     * Renderiza a HUD principal.
+     * Renderiza a HUD principal (vida, score e status).
      */
     private void renderHUD() {
         shapeRenderer.setProjectionMatrix(hudCamera.combined);
-
         shapeRenderer.begin(ShapeType.Filled);
 
-        // 1. Barra de Vida do Jogador (Vermelha)
+        // Barra do Jogador
         float playerBarX = 35f;
         float playerBarY = 650f;
         float playerBarW = 280f;
@@ -450,18 +541,26 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
         shapeRenderer.setColor(Color.RED);
         shapeRenderer.rect(playerBarX, playerBarY, playerBarW * playerHpRatio, playerBarH);
 
-        // 2. Barra de Vida do Boss (Roxa) - visível na arena
+        // Barra do Boss (só aparece após cruzar o gatilho da arena)
         float bossBarW = 480f;
         float bossBarH = 26f;
         float bossBarX = (VIRTUAL_WIDTH - bossBarW) / 2f;
         float bossBarY = 648f;
 
-        shapeRenderer.setColor(new Color(0.15f, 0.15f, 0.18f, 1f));
-        shapeRenderer.rect(bossBarX, bossBarY, bossBarW, bossBarH);
+        if (bossArenaTriggered) {
+            shapeRenderer.setColor(new Color(0.15f, 0.15f, 0.18f, 1f));
+            shapeRenderer.rect(bossBarX, bossBarY, bossBarW, bossBarH);
 
-        float bossHpRatio = Math.max(0f, (float) bossC.getCurrentHp() / (float) bossC.getMaxHp());
-        shapeRenderer.setColor(Color.PURPLE);
-        shapeRenderer.rect(bossBarX, bossBarY, bossBarW * bossHpRatio, bossBarH);
+            float bossHpRatio;
+            if (isBossIntroActive) {
+                bossHpRatio = MathUtils.clamp(bossIntroTimer / (INTRO_DURATION * 0.85f), 0f, 1f);
+            } else {
+                bossHpRatio = Math.max(0f, (float) bossPython.getCurrentHp() / (float) bossPython.getMaxHp());
+            }
+
+            shapeRenderer.setColor(Color.PURPLE);
+            shapeRenderer.rect(bossBarX, bossBarY, bossBarW * bossHpRatio, bossBarH);
+        }
 
         shapeRenderer.end();
 
@@ -469,25 +568,45 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
         shapeRenderer.begin(ShapeType.Line);
         shapeRenderer.setColor(Color.LIGHT_GRAY);
         shapeRenderer.rect(playerBarX, playerBarY, playerBarW, playerBarH);
-        shapeRenderer.rect(bossBarX, bossBarY, bossBarW, bossBarH);
+
+        if (bossArenaTriggered) {
+            shapeRenderer.rect(bossBarX, bossBarY, bossBarW, bossBarH);
+        }
         shapeRenderer.end();
 
         SpriteBatch batch = game.getBatch();
         batch.setProjectionMatrix(hudCamera.combined);
         batch.begin();
 
-        // Textos das barras
+        // Rótulos e Pontuação atual acumulada
         hudFont.setColor(Color.WHITE);
         hudFont.draw(batch, "JOGADOR  [HP: " + player.getCurrentHp() + " / " + player.getMaxHp() + "]", playerBarX, playerBarY + 40f);
 
-        hudFont.setColor(Color.PURPLE);
-        glyphLayout.setText(hudFont, bossC.getName() + "  [HP: " + bossC.getCurrentHp() + " / " + bossC.getMaxHp() + "]");
-        float bossTextX = bossBarX + (bossBarW - glyphLayout.width) / 2f;
-        hudFont.draw(batch, glyphLayout, bossTextX, bossBarY + 44f);
+        // Indicador de dificuldade — cor varia conforme o nível
+        Color diffColor = difficulty == Difficulty.FACIL ? Color.GREEN
+                        : difficulty == Difficulty.DIFICIL ? Color.RED : Color.YELLOW;
+        smallFont.setColor(diffColor);
+        smallFont.draw(batch, "DIFICULDADE: " + difficulty.getDisplayName(), playerBarX, playerBarY + 58f);
+
+        // Exibição do Score atual em tempo real no canto superior direito
+        hudFont.setColor(Color.YELLOW);
+        String scoreText = String.format("SCORE: %,d PTS", scoreManager.getCurrentScore());
+        glyphLayout.setText(hudFont, scoreText);
+        hudFont.draw(batch, glyphLayout, VIRTUAL_WIDTH - glyphLayout.width - 35f, playerBarY + 40f);
+
+        if (bossArenaTriggered) {
+            hudFont.setColor(Color.PURPLE);
+            int displayHp = isBossIntroActive
+                    ? (int) (MathUtils.clamp(bossIntroTimer / (INTRO_DURATION * 0.85f), 0f, 1f) * bossPython.getMaxHp())
+                    : bossPython.getCurrentHp();
+
+            glyphLayout.setText(hudFont, bossPython.getName() + "  [HP: " + displayHp + " / " + bossPython.getMaxHp() + "]");
+            float bossTextX = bossBarX + (bossBarW - glyphLayout.width) / 2f;
+            hudFont.draw(batch, glyphLayout, bossTextX, bossBarY + 44f);
+        }
 
         // Indicadores de Buffs de IA
         float buffY = playerBarY - 14f;
-
         if (player.isGodMode()) {
             smallFont.setColor(Color.GOLD);
             smallFont.draw(batch, "[MODO DEUS ATIVO]", playerBarX, buffY);
@@ -509,7 +628,7 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
             buffY -= 18f;
         }
 
-        // DISPLAY DE CHEATS (OCULTO POR PADRÃO, visível apenas se ativado pelo botão secreto)
+        // Cheats visíveis se ativados pelo botão secreto
         if (CheatManager.isCheatsDisplayEnabled()) {
             smallFont.setColor(new Color(0.3f, 1.0f, 0.4f, 0.95f));
             smallFont.draw(batch, "CHEATS [ATIVADOS]: [F1] Modo Deus  |  [F2] Instakill  |  [F3] Spawn Power-Up  |  [F4] Forçar Vitória", 35f, 30f);
@@ -520,49 +639,182 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
             }
         }
 
-        // TELA DE VITÓRIA (Mensagem exata: "parabéns! ✌️ ✌️")
-        if (bossC.isDead()) {
+        batch.end();
+    }
+
+    /**
+     * Caixa preta centralizada na tela solicitando o nome/apelido do jogador ao término da partida.
+     */
+    private void renderNicknameInputModal() {
+        SpriteBatch batch = game.getBatch();
+        batch.setProjectionMatrix(hudCamera.combined);
+
+        float boxW = 600f;
+        float boxH = 340f;
+        float boxX = (VIRTUAL_WIDTH - boxW) / 2f;
+        float boxY = (VIRTUAL_HEIGHT - boxH) / 2f;
+
+        // Escurecimento de fundo
+        batch.begin();
+        batch.draw(modalOverlayTexture, 0f, 0f, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+        // Caixa preta centralizada
+        batch.draw(blackBoxTexture, boxX, boxY, boxW, boxH);
+        batch.end();
+
+        // Moldura branca/cinza
+        shapeRenderer.setProjectionMatrix(hudCamera.combined);
+        shapeRenderer.begin(ShapeType.Line);
+        shapeRenderer.setColor(Color.WHITE);
+        shapeRenderer.rect(boxX, boxY, boxW, boxH);
+
+        // Caixa de texto do input
+        float inputW = 380f;
+        float inputH = 48f;
+        float inputX = boxX + (boxW - inputW) / 2f;
+        float inputY = boxY + 105f;
+        shapeRenderer.setColor(Color.LIGHT_GRAY);
+        shapeRenderer.rect(inputX, inputY, inputW, inputH);
+        shapeRenderer.end();
+
+        batch.begin();
+
+        // Título de status
+        boolean won = bossPython.isDead();
+        if (won) {
             titleFont.setColor(Color.GREEN);
-            glyphLayout.setText(titleFont, "parabéns! ✌️ ✌️");
-            float winTextX = (VIRTUAL_WIDTH - glyphLayout.width) / 2f;
-            titleFont.draw(batch, glyphLayout, winTextX, 440f);
-
-            hudFont.setColor(Color.WHITE);
-            drawCenteredMessage(batch, "Pressione [ESC] para o Menu de Pausa  |  [R] para Reiniciar", 370f);
-        } else if (player.isDead()) {
+            glyphLayout.setText(titleFont, "parabéns!!! Você derrotou o Python Corrompido!");
+        } else {
             titleFont.setColor(Color.RED);
-            glyphLayout.setText(titleFont, "VOCÊ FOI DERROTADO!");
-            float loseTextX = (VIRTUAL_WIDTH - glyphLayout.width) / 2f;
-            titleFont.draw(batch, glyphLayout, loseTextX, 440f);
-
-            hudFont.setColor(Color.WHITE);
-            drawCenteredMessage(batch, "Pressione [R] para tentar novamente  |  [ESC] para o Menu de Pausa", 370f);
+            glyphLayout.setText(titleFont, "GAME OVER");
         }
+        float tX = boxX + (boxW - glyphLayout.width) / 2f;
+        titleFont.draw(batch, glyphLayout, tX, boxY + boxH - 30f);
+
+        // Pontuação alcançada
+        hudFont.setColor(Color.YELLOW);
+        String scoreDisplay = String.format("PONTUAÇÃO FINAL: %,d PTS", scoreManager.getCurrentScore());
+        glyphLayout.setText(hudFont, scoreDisplay);
+        float sX = boxX + (boxW - glyphLayout.width) / 2f;
+        hudFont.draw(batch, glyphLayout, sX, boxY + boxH - 95f);
+
+        // Texto solicitado: "Insira seu nome/apelido"
+        hudFont.setColor(Color.WHITE);
+        glyphLayout.setText(hudFont, "Insira seu nome/apelido:");
+        float promptX = boxX + (boxW - glyphLayout.width) / 2f;
+        hudFont.draw(batch, glyphLayout, promptX, boxY + boxH - 140f);
+
+        // Texto digitado com cursor piscante
+        boolean cursorOn = ((int) (cursorBlinkTimer * 2f)) % 2 == 0;
+        String typedDisplay = nicknameInput.toString() + (cursorOn ? "_" : " ");
+        hudFont.setColor(Color.GREEN);
+        glyphLayout.setText(hudFont, typedDisplay.isEmpty() ? (cursorOn ? "_" : "") : typedDisplay);
+        float textX = inputX + 20f;
+        float textY = inputY + (inputH + glyphLayout.height) / 2f;
+        hudFont.draw(batch, glyphLayout, textX, textY);
+
+        // Instrução de confirmação
+        smallFont.setColor(Color.LIGHT_GRAY);
+        String hint = "Pressione [ENTER] para Salvar no Ranking";
+        glyphLayout.setText(smallFont, hint);
+        float hintX = boxX + (boxW - glyphLayout.width) / 2f;
+        smallFont.draw(batch, glyphLayout, hintX, boxY + 55f);
 
         batch.end();
     }
 
     /**
-     * Renderiza o Menu de Pausa flutuante acionado pela tecla ESC.
+     * Tabela de Leaderboard local exibida após a confirmação do apelido.
      */
+    private void renderPostGameLeaderboard() {
+        SpriteBatch batch = game.getBatch();
+        batch.setProjectionMatrix(hudCamera.combined);
+
+        float boxW = 620f;
+        float boxH = 430f;
+        float boxX = (VIRTUAL_WIDTH - boxW) / 2f;
+        float boxY = (VIRTUAL_HEIGHT - boxH) / 2f;
+
+        batch.begin();
+        batch.draw(modalOverlayTexture, 0f, 0f, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+        batch.draw(blackBoxTexture, boxX, boxY, boxW, boxH);
+        batch.end();
+
+        shapeRenderer.setProjectionMatrix(hudCamera.combined);
+        shapeRenderer.begin(ShapeType.Line);
+        shapeRenderer.setColor(Color.GREEN);
+        shapeRenderer.rect(boxX, boxY, boxW, boxH);
+        shapeRenderer.end();
+
+        batch.begin();
+
+        // Título
+        titleFont.setColor(Color.GREEN);
+        glyphLayout.setText(titleFont, "LEADERBOARD LOCAL");
+        float tX = boxX + (boxW - glyphLayout.width) / 2f;
+        titleFont.draw(batch, glyphLayout, tX, boxY + boxH - 30f);
+
+        // Ranking com até 5 linhas decrescentes
+        hudFont.setColor(Color.WHITE);
+        float lineY = boxY + boxH - 95f;
+        List<ScoreManager.ScoreEntry> top = ScoreManager.getTopScores(5);
+
+        for (int i = 0; i < 5; i++) {
+            String rankLine;
+            if (i < top.size()) {
+                ScoreManager.ScoreEntry e = top.get(i);
+                rankLine = String.format("%dº  |  %-12s  |  %,d pts", (i + 1), e.getNickname(), e.getScore());
+            } else {
+                rankLine = String.format("%dº  |  ---           |  ---", (i + 1));
+            }
+            glyphLayout.setText(hudFont, rankLine);
+            float lx = boxX + (boxW - glyphLayout.width) / 2f;
+            hudFont.draw(batch, glyphLayout, lx, lineY);
+            lineY -= 44f;
+        }
+
+        // Opções de saída
+        smallFont.setColor(Color.YELLOW);
+        String options = "Pressione [R] para Reiniciar Fase  |  [ESC] para o Menu Principal";
+        glyphLayout.setText(smallFont, options);
+        float ox = boxX + (boxW - glyphLayout.width) / 2f;
+        smallFont.draw(batch, glyphLayout, ox, boxY + 40f);
+
+        batch.end();
+    }
+
+    private void renderCinematicIntro() {
+        SpriteBatch batch = game.getBatch();
+        batch.setProjectionMatrix(hudCamera.combined);
+        batch.begin();
+
+        float bannerH = 140f;
+        float bannerY = 270f;
+        batch.draw(cinematicBannerTexture, 0f, bannerY, VIRTUAL_WIDTH, bannerH);
+
+        titleFont.setColor(Color.PURPLE);
+        glyphLayout.setText(titleFont, "BOSS PYTHON: A SERPENTE DA INDENTAÇÃO");
+        float titleX = (VIRTUAL_WIDTH - glyphLayout.width) / 2f;
+        titleFont.draw(batch, glyphLayout, titleX, bannerY + 100f);
+
+        hudFont.setColor(Color.YELLOW);
+        drawCenteredMessage(batch, "ATENÇÃO: RAJADAS EM LEQUE E BLOQUEIO GLOBAL (GIL) DETECTADOS!", bannerY + 45f);
+
+        batch.end();
+    }
+
     private void renderPauseMenu() {
         SpriteBatch batch = game.getBatch();
         batch.setProjectionMatrix(hudCamera.combined);
         batch.begin();
 
-        // Escurece o fundo
         batch.draw(modalOverlayTexture, 0f, 0f, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
-
-        // Painel flutuante
         batch.draw(modalPanelTexture, pauseModalBounds.x, pauseModalBounds.y, pauseModalBounds.width, pauseModalBounds.height);
 
-        // Título "PAUSA"
         titleFont.setColor(Color.WHITE);
         glyphLayout.setText(titleFont, "PAUSA");
         float titleX = pauseModalBounds.x + (pauseModalBounds.width - glyphLayout.width) / 2f;
         titleFont.draw(batch, glyphLayout, titleX, pauseModalBounds.y + pauseModalBounds.height - 35f);
 
-        // Botão 1: "Recomeçar"
         Texture texRestart = (hoveredPauseButton == 1) ? btnHoverTexture : btnTexture;
         batch.draw(texRestart, btnPauseRestartBounds.x, btnPauseRestartBounds.y, btnPauseRestartBounds.width, btnPauseRestartBounds.height);
         hudFont.setColor(Color.WHITE);
@@ -571,7 +823,6 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
         float rTextY = btnPauseRestartBounds.y + (btnPauseRestartBounds.height + glyphLayout.height) / 2f;
         hudFont.draw(batch, glyphLayout, rTextX, rTextY);
 
-        // Botão 2: "Sair"
         Texture texExit = (hoveredPauseButton == 2) ? btnHoverTexture : btnTexture;
         batch.draw(texExit, btnPauseExitBounds.x, btnPauseExitBounds.y, btnPauseExitBounds.width, btnPauseExitBounds.height);
         hudFont.setColor(Color.WHITE);
@@ -590,8 +841,46 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
     }
 
     @Override
+    public boolean onKeyTyped(char character) {
+        if (nicknameModalActive) {
+            if (character == '\b') {
+                if (nicknameInput.length() > 0) {
+                    nicknameInput.deleteCharAt(nicknameInput.length() - 1);
+                }
+                return true;
+            } else if (character == '\r' || character == '\n') {
+                return onEnterPressed();
+            } else if ((Character.isLetterOrDigit(character) || character == '_' || character == ' ') && nicknameInput.length() < 12) {
+                nicknameInput.append(Character.toUpperCase(character));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public boolean onEnterPressed() {
+        if (nicknameModalActive) {
+            String name = nicknameInput.toString().trim();
+            if (name.isEmpty()) {
+                name = "DEV_SENAI";
+            }
+            ScoreManager.addScore(name, scoreManager.getCurrentScore());
+            nicknameModalActive = false;
+            nicknameSubmitted = true;
+            return true;
+        }
+        return false;
+    }
+
+    @Override
     public void onEscapePressed() {
-        // Alterna o estado de pausa do jogo
+        // Se a partida acabou e salvou pontuação, ESC volta ao Menu Principal
+        if (nicknameSubmitted) {
+            game.setScreen(new MainMenuScreen(game));
+            return;
+        }
+        // Caso contrário, alterna o menu de pausa normal
         this.isPaused = !this.isPaused;
     }
 
@@ -602,7 +891,7 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
 
     @Override
     public boolean onCheatKeyPressed(int keycode) {
-        return cheatManager.handleCheatKey(keycode, player, bossC, this);
+        return cheatManager.handleCheatKey(keycode, player, bossPython, this);
     }
 
     @Override
@@ -611,16 +900,13 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
             return false;
         }
 
-        // Converte coordenadas do mouse para o espaço virtual da HUD
         hudCamera.unproject(mouseCoords.set(screenX, screenY, 0));
 
-        // Botão "Recomeçar"
         if (btnPauseRestartBounds.contains(mouseCoords.x, mouseCoords.y)) {
             initBattle();
             return true;
         }
 
-        // Botão "Sair" -> volta ao menu principal
         if (btnPauseExitBounds.contains(mouseCoords.x, mouseCoords.y)) {
             game.setScreen(new MainMenuScreen(game));
             return true;
@@ -671,7 +957,7 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
         parallaxBackground.dispose();
         groundTexture.dispose();
         player.dispose();
-        bossC.dispose();
+        bossPython.dispose();
 
         for (Platform p : platforms) p.dispose();
         for (Hazard h : hazards) h.dispose();
@@ -684,7 +970,9 @@ public class BossArenaScreen implements Screen, PlayerInputHandler.ArenaInputLis
         smallFont.dispose();
         modalOverlayTexture.dispose();
         modalPanelTexture.dispose();
+        blackBoxTexture.dispose();
         btnTexture.dispose();
         btnHoverTexture.dispose();
+        cinematicBannerTexture.dispose();
     }
 }

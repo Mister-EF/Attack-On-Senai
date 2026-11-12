@@ -6,7 +6,7 @@ import com.badlogic.gdx.InputAdapter;
 import io.github.AOS.entities.Player;
 
 /**
- * Processador de entrada dedicado para o jogador e comandos gerais da arena e pausa.
+ * Processador de entrada dedicado para o jogador, comandos gerais, pausa e inserção de texto.
  */
 public class PlayerInputHandler extends InputAdapter {
 
@@ -16,6 +16,8 @@ public class PlayerInputHandler extends InputAdapter {
         boolean onCheatKeyPressed(int keycode);
         boolean onScreenClicked(int screenX, int screenY);
         void onScreenMouseMoved(int screenX, int screenY);
+        boolean onKeyTyped(char character);
+        boolean onEnterPressed();
     }
 
     private final Player player;
@@ -31,6 +33,13 @@ public class PlayerInputHandler extends InputAdapter {
 
     @Override
     public boolean keyDown(int keycode) {
+        // Se a tela estiver em modo de inserção de apelido, Enter confirma
+        if (keycode == Keys.ENTER || keycode == Keys.NUMPAD_ENTER) {
+            if (arenaListener != null && arenaListener.onEnterPressed()) {
+                return true;
+            }
+        }
+
         switch (keycode) {
             case Keys.A:
             case Keys.LEFT:
@@ -98,6 +107,14 @@ public class PlayerInputHandler extends InputAdapter {
             default:
                 return false;
         }
+    }
+
+    @Override
+    public boolean keyTyped(char character) {
+        if (arenaListener != null && arenaListener.onKeyTyped(character)) {
+            return true;
+        }
+        return false;
     }
 
     @Override

@@ -17,7 +17,7 @@ import io.github.AOS.input.MenuInputHandler;
 import io.github.AOS.systems.CheatManager;
 import io.github.AOS.utils.PlaceholderFactory;
 
-import java.util.Arrays;
+import io.github.AOS.systems.ScoreManager;
 import java.util.List;
 
 /**
@@ -62,15 +62,6 @@ public class MainMenuScreen implements Screen {
     // Estados da interface
     private boolean showLeaderboardModal = false;
     private int hoveredButton = 0; // 1: GO, 2: Leaderboard, 3: Exit, 4: Fullscreen, 5: Close Modal, 6: Secret Cheat
-
-    // Lista estática temporária das últimas 5 pontuações em memória
-    private static final List<String> RECENT_SCORES = Arrays.asList(
-            "1º - 18.500 pts | Aprovado com Louvor",
-            "2º - 14.200 pts | Especialista Back-End",
-            "3º - 11.850 pts | Sobrevivente do SENAI",
-            "4º - 09.400 pts | Desafio Módulo 2",
-            "5º - 06.200 pts | Primeira Batalha"
-    );
 
     public MainMenuScreen(Main game) {
         this.game = game;
@@ -218,8 +209,17 @@ public class MainMenuScreen implements Screen {
 
         regularFont.setColor(Color.WHITE);
         float itemY = modalBounds.y + modalBounds.height - 95f;
-        for (String scoreEntry : RECENT_SCORES) {
-            glyphLayout.setText(regularFont, scoreEntry);
+        List<ScoreManager.ScoreEntry> topScores = ScoreManager.getTopScores(5);
+
+        for (int i = 0; i < 5; i++) {
+            String lineText;
+            if (i < topScores.size()) {
+                ScoreManager.ScoreEntry entry = topScores.get(i);
+                lineText = String.format("%dº  |  %-12s  |  %,d pts", (i + 1), entry.getNickname(), entry.getScore());
+            } else {
+                lineText = String.format("%dº  |  ---           |  ---", (i + 1));
+            }
+            glyphLayout.setText(regularFont, lineText);
             float itemX = modalBounds.x + (modalBounds.width - glyphLayout.width) / 2f;
             regularFont.draw(batch, glyphLayout, itemX, itemY);
             itemY -= 48f;
@@ -255,9 +255,9 @@ public class MainMenuScreen implements Screen {
             return true;
         }
 
-        // Opção GO -> Vai para a tela da fase
+        // Opção GO -> Vai para a tela de seleção de dificuldade
         if (btnGoBounds.contains(worldX, worldY)) {
-            game.setScreen(new BossArenaScreen(game));
+            game.setScreen(new DifficultyScreen(game));
             return true;
         }
 

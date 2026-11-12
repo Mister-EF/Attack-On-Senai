@@ -228,11 +228,11 @@ O módulo `lwjgl3` também está configurado com o plugin **Construo** para empa
 - [x] Chefe com investida e projéteis
 - [x] Power-ups de IA e cheats de demonstração
 - [x] Menu de pausa e tela de vitória
-- [ ] Seleção de dificuldade (Fácil, Médio, Difícil)
-- [ ] Sprites e animações finais
+- [x] Seleção de dificuldade (Fácil, Médio, Difícil)
+- [x] Sprites e animações finais
 - [ ] Mais ataques para o chefe
 - [ ] Chefes adicionais
-- [ ] Leaderboard com pontuações reais
+- [x] Leaderboard com pontuações reais
 
 ---
 

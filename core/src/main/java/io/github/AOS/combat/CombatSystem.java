@@ -1,10 +1,13 @@
 package io.github.AOS.combat;
 
 import com.badlogic.gdx.math.Intersector;
+import com.badlogic.gdx.utils.Array;
 import io.github.AOS.entities.BossProjectile;
 import io.github.AOS.entities.Player;
 import io.github.AOS.entities.bosses.Boss;
 import io.github.AOS.entities.bosses.BossC;
+import io.github.AOS.entities.bosses.BossPython;
+import io.github.AOS.systems.ScoreManager;
 
 /**
  * Sistema de combate responsável por gerenciar colisões de ataque, investidas e projéteis
@@ -12,14 +15,14 @@ import io.github.AOS.entities.bosses.BossC;
  */
 public class CombatSystem {
 
-    /**
-     * Processa interações de combate e verificações de hit entre o Jogador, o Chefe e suas Bullets.
-     *
-     * @param delta  Tempo transcorrido desde o último quadro.
-     * @param player Instância do jogador.
-     * @param boss   Instância do chefe ativo.
-     */
     public void update(float delta, Player player, Boss boss) {
+        update(delta, player, boss, null);
+    }
+
+    /**
+     * Processa interações de combate e computa pontuação de dano infligido.
+     */
+    public void update(float delta, Player player, Boss boss, ScoreManager scoreManager) {
         if (player.isDead() || boss.isDead()) {
             return;
         }
@@ -28,14 +31,23 @@ public class CombatSystem {
         if (player.isAttacking() && Intersector.overlaps(player.getAttackBounds(), boss.getBounds())) {
             int damage = player.getAttackDamage();
             if (damage > 0) {
-                boss.takeDamage(damage);
+                boolean damaged = boss.takeDamage(damage);
+                if (damaged && scoreManager != null) {
+                    scoreManager.addDamagePoints(damage, true);
+                }
             }
         }
 
         // 2. Colisão / Investida direta do Chefe contra o Jogador
         if (Intersector.overlaps(player.getBounds(), boss.getBounds())) {
             if (!player.isInvulnerable()) {
-                boolean isDashing = (boss instanceof BossC) && ((BossC) boss).isDashing();
+                boolean isDashing = false;
+                if (boss instanceof BossPython) {
+                    isDashing = ((BossPython) boss).isDashing();
+                } else if (boss instanceof BossC) {
+                    isDashing = ((BossC) boss).isDashing();
+                }
+
                 int bossDamage = isDashing ? 30 : 15;
                 float knockbackForce = isDashing ? 450f : 250f;
 
@@ -47,9 +59,15 @@ public class CombatSystem {
         }
 
         // 3. Colisão dos Projéteis (Bullets Amarelas) do Chefe contra o Jogador
-        if (boss instanceof BossC) {
-            BossC bossC = (BossC) boss;
-            for (BossProjectile p : bossC.getProjectiles()) {
+        Array<BossProjectile> projectiles = null;
+        if (boss instanceof BossPython) {
+            projectiles = ((BossPython) boss).getProjectiles();
+        } else if (boss instanceof BossC) {
+            projectiles = ((BossC) boss).getProjectiles();
+        }
+
+        if (projectiles != null) {
+            for (BossProjectile p : projectiles) {
                 if (!p.isDestroyed() && Intersector.overlaps(player.getBounds(), p.getBounds())) {
                     if (!player.isInvulnerable()) {
                         player.takeDamage(p.getDamage());

@@ -6,11 +6,12 @@ import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import com.badlogic.gdx.math.Rectangle;
 import com.badlogic.gdx.math.Vector2;
 import io.github.AOS.entities.Player;
+import io.github.AOS.utils.AssetLoader;
 import io.github.AOS.utils.PlaceholderFactory;
 
 /**
- * Classe base abstrata para todos os chefes (Bosses) do Boss Rush.
- * Gerencia ciclo de vida, atributos de vida, colisão e renderização placeholder roxa.
+ * Classe base abstrata para todos os chefes (Bosses) do jogo.
+ * Gerencia ciclo de vida, atributos de vida, colisão, fallback de sprites e renderização roxa.
  */
 public abstract class Boss {
 
@@ -43,8 +44,11 @@ public abstract class Boss {
         this.bounds = new Rectangle(startX, startY, width, height);
         this.isGrounded = false;
 
-        // Placeholder visual Roxo conforme o AGENTS.md
-        this.bossTexture = PlaceholderFactory.createBossTexture();
+        // Suporte a carregamento de sprite em assets/ com fallback para o placeholder Roxo (AGENTS.md)
+        this.bossTexture = AssetLoader.loadTextureWithFallback(
+                "sprites/boss.png",
+                PlaceholderFactory::createBossTexture
+        );
         // Textura clara para feedback instantâneo de impacto
         this.hitFlashTexture = PlaceholderFactory.createColoredTexture(Color.WHITE);
     }
@@ -95,7 +99,7 @@ public abstract class Boss {
     }
 
     /**
-     * Renderiza o chefe com a textura roxa oficial e efeito de impacto.
+     * Renderiza o chefe com suporte a sprite / placeholder roxo e efeito de impacto.
      */
     public void render(SpriteBatch batch) {
         if (isDead()) {
